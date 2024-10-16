@@ -1,0 +1,5 @@
+data/*
+hf_models/*
+*pycache*
+*json
+main.py

@@ -3,7 +3,7 @@ import torch
 import pickle
 import numpy as np
 from PIL import Image
-from typing import List, Union, Tuple, Any
+from typing import List, Union, Tuple, Any, Set
 
 from models.vlm import VLMMeta, ImageLike, preprocess, LLM
 from structure.tree import TreeMeta
@@ -37,7 +37,7 @@ class GarlicTree(TreeMeta):
     def __init__(self, vmodel: VLMMeta, lmodel: Union[VLMMeta, LLM], log: str=None):
         self.model = vmodel
         self.lmodel = lmodel
-        self.prompt_template = "Please read and summarize the following paragraphs carefully, Split your summary into different summary points according to the semantic information in these information points. It is not necessary to generate each summary point for each information point. Gather and organize information into summary points. In each summary point, try to avoid using pronouns like he/she/they and instead use full names. Generate in the format of: * <summary point1>\n* <summary point2>\n* <summary point3>"
+        self.prompt_template = "Please read and summarize the following paragraphs carefully, Split your summary into different summary points according to the semantic information in these information points. It is not necessary to generate each summary point for each information point. Gather and organize information into summary points. In each summary point, try to avoid using pronouns like he/she/they and instead use full names. Generate in the format of: * <summary point1>\n* <summary point2>\n* <summary point3>."
         self.interm_template = "Please group the summary points, for each group, give it a subtitle and briefly describe it. Do not repeat the information point in the given paragraphs. Do not list any specific figure or number(For example, percentage / number...). Generate in the format of: **subtitle 1**: <description of subtitle1>\n**subtitle 2**: <description of subtitle2>\n..."
         self.prompt_template_img = "Are there any figures(pie chart, table, bar chart, etc.) in this document? If so, briefly summarize meaning of each figure in this page. Else, reply a single string `No`. Do not list any specific number or value."
         if log:
@@ -45,7 +45,7 @@ class GarlicTree(TreeMeta):
             with open(self.log, "w") as fp:
                 fp.close()
     
-    def log_str(self, text: str, newline: int=200) -> None:
+    def log_str(self, text: Any, newline: int=200) -> None:
         text = str(text)
         def insert_newline(s, n):
             return '\n'.join([s[i:i+n] for i in range(0, len(s), n)])
@@ -82,6 +82,14 @@ class GarlicTree(TreeMeta):
     def load(self, file_path: str):
         with open(file_path, "rb") as fp:
             self.layers = pickle.load(fp)
+            GarlicNode.node_id = sum([len(layer) for layer in self.layers])
+            self.adj_matrix = torch.zeros((GarlicNode.node_id, GarlicNode.node_id), dtype=torch.float32)
+            for layer in self.layers:
+                for node in layer:
+                    node: GarlicNode
+                    ids, weights = self._fetch_weights(node)
+                    if len(ids):
+                        self.adj_matrix[node.id][ids] = weights
             self.log_str(f"Tree loaded.\n")
 
     def _load_leaves(self, file_path: str) -> List[GarlicNode]:
@@ -97,9 +105,18 @@ class GarlicTree(TreeMeta):
     def _fetch_desc(self, nodes: List[GarlicNode]) -> List[str]:
         return [node.desc for node in nodes]
     
-    def _fetch_weights(self, nodes: List[GarlicNode], return_tensors: str="pt") -> Union[torch.Tensor, np.ndarray]:
+    def _fetch_weights(self, node: GarlicNode, return_tensors: str="pt") -> Tuple[Union[torch.Tensor, np.ndarray], Union[torch.Tensor, np.ndarray]]:
         assert return_tensors in ["pt", "np"]
-        # TODO
+        if len(node.children) == 0:
+            return [], []
+        nodes, weights = zip(*node.children)
+        ids = [node.id for node in nodes]
+        if return_tensors == "pt":
+            return torch.tensor(ids), torch.tensor(weights)
+        elif return_tensors == "pt":
+            return np.array(ids), np.array(weights)
+
+        raise NotImplementedError()
     
     def merge_images(self, nodes: List[GarlicNode], layer: int) -> Image.Image:
         """
@@ -118,13 +135,17 @@ class GarlicTree(TreeMeta):
         return None
     
     def merge_text(self, nodes: List[GarlicNode], layer: int) -> Tuple[List[str], torch.Tensor]:
+        """
+        Merge the bottom layer texts into new strings. 
+        """
         texts = self._fetch_desc(nodes)
+        texts = [ip.strip().strip('*').replace('<|im_end|>', '') for ip in texts]
         model_inputs = [
             self.lmodel.pre_prompts + self.get_prompt_template(layer),
             *texts,
             self.lmodel.post_prompts
         ]
-        self.log_str("Raw inputs: \n" + "".join(model_inputs) + "\n")
+        self.log_str("Raw inputs: \n" + str(model_inputs) + "\n")
         new_text, attentions = self.lmodel.attentioned_predict("".join(model_inputs))
         self.log_str(f"Raw prediction: {new_text}")
         IPs = self._parse_response(new_text)
@@ -133,6 +154,14 @@ class GarlicTree(TreeMeta):
         
         assert len(IPs) == scores.shape[0]
         assert len(nodes) == scores.shape[1]
+
+        if torch.any(torch.isnan(scores)):
+            self.log_str("!!!Raw inputs: \n" + "".join(model_inputs) + "\n")
+            new_text, attentions = self.lmodel.attentioned_predict("".join(model_inputs))
+            self.log_str(f"!!!Raw prediction: {new_text}")
+            self.log_str(torch.any(torch.isnan(attentions)))
+            self.log_str(f"attentions: {attentions}")
+            self.log_str(f"scores: {scores}")
 
         return IPs, scores
     
@@ -215,7 +244,6 @@ class GarlicTree(TreeMeta):
         self.layers = list()
         self.image_descs = list()
         leaves = list() if leaves is None else self._load_leaves(leaves)
-        self.leaf_num = len(leaves)
 
         if len(leaves) == 0:
             for i, image in enumerate(images):
@@ -248,47 +276,79 @@ class GarlicTree(TreeMeta):
             self.layers.append(new_layer)
         
         self.layers[-1].extend(self.image_descs)
+
+        self.id2node = dict()
+        for layer in self.layers:
+            for node in layer:
+                self.id2node[node.id] = node
         
+        # calculate adj matrix
+        self.adj_matrix = torch.zeros((GarlicNode.node_id, GarlicNode.node_id), dtype=torch.float32)
+        for layer in self.layers:
+            for node in layer:
+                node: GarlicNode
+                ids, weights = self._fetch_weights(node)
+                if len(ids):
+                    self.adj_matrix[node.id][ids] = weights
+        
+        self.log_str(str(self.adj_matrix))
+
         self._save_tree("tree.pkl")
         
-    def finish_query(self, prompt: str, memory: List[GarlicNode], images: ImageLike=None) -> bool:
-        memories = "\n".join(reversed(self._fetch_desc(memory)))
-        self.log_str(f"CURRENT LENGTH = {len(memories)}\n")
-        template = f"Can this question be answered by the following information? Response Yes or No in one word. Do not provide any explanation or directly answer the question. Question: {prompt}\nInformation:\n{memories}"
-        return self.model.predict(template, images)
+    def finish_query(self, prompt: str, memory: List[GarlicNode], images: ImageLike=None, multi_models: bool=False) -> Tuple[str, torch.Tensor]:
+        """
+        Given prompt and memory, ask LLM(VLM) if the question can be answered.
+        """
+        template = ["Can this question be answered by the following information? Response Yes or No in one word. Do not provide any explanation or directly answer the question.",
+                    f"Question: {prompt}\n",
+                    f"Information:\n",
+                    *[node.desc + "\n" for node in memory]
+                    ]
+        if multi_models and images is None:
+            output, attentions = self.lmodel.attentioned_predict("".join(template), return_attn=False, inner_attention=True)
+            scores = self.lmodel.str_level_score(template, template, attentions, io_attention=False) # [3 + len(memory), 3 + len(memory)]
+            scores = scores[3:, 1] # [len(memory)]
+            # compensation on position
+            scores = scores * torch.arange(1, len(memory) + 1)
+            return output, scores
+        return self.model.predict(template, images), torch.ones(len(memory) + 1)
+
+    def graph_search(self, nodes: List[GarlicNode], memory_ids: Set[int], attentions: torch.Tensor) -> GarlicNode:
+        """
+        Search the next node to be queried.
+        """
+        # construct query-node similarity vector
+        similarity = torch.zeros(GarlicNode.node_id) # [N, ]
+        indices = [node.id for node in nodes]
+        similarity[indices] = attentions # fill the blanks
+
+        dist = self.adj_matrix @ similarity
+
+        # find maximum
+        dist[list(memory_ids)] = 0.0 # mask the chosen ones
+        max_idx = torch.argmax(dist).item()
+
+        return self.id2node[max_idx]
 
     def query(self, prompt: str) -> str:
         # TODO
-        memory = self.layers[-1]
+        memory: List[GarlicNode] = self.layers[-1]
         memory_ids = set([node.id for node in memory])
         cur_image = None
-        finish_result = self.finish_query(prompt, memory, images=cur_image)
+        finish_result, attention_score = self.finish_query(prompt, memory, multi_models=True)
         self.log_str(f"<Initial info>\n" + "\n".join(self._fetch_desc(memory)) + "</Initial info>\n")
         while 'yes' not in finish_result.lower():
             self.log_str(f"Finish result: {finish_result}\n")
 
-            # expand
-            next_nodes = list()
-            for node in memory:
-                for next_node in node.children:
-                    if next_node.id not in memory_ids:
-                        next_nodes.append(next_node)
-            
-            result = self.model.predict(self.get_query_template(prompt, next_nodes)).strip()
-            expand_id = int(result) - 1
-            memory.append(next_nodes[expand_id])
-            self.log_str(f"<Expand>\n{next_nodes[expand_id].desc}</Expand>")
-            if next_nodes[expand_id].image is not None:
-                cur_image = next_nodes[expand_id].image
+            next_node = self.graph_search(memory, memory_ids, attention_score)
+        
+            memory.append(next_node)
+            memory_ids.add(next_node.id)
 
-            finish_result = self.finish_query(prompt, memory, images=cur_image)
+            finish_result, attention_score = self.finish_query(prompt, memory, multi_models=True)
 
             cur_image = None
         
         memories = "\n".join(reversed(self._fetch_desc(memory)))
 
         return self.model.predict(f"Answer the question: {prompt}, and give your evidence, with the following information:\n{memories}", cur_image)
-    
-    def retrieve(self, prompt: str) -> List[int]:
-        # TODO
-        pass

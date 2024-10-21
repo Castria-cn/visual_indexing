@@ -35,13 +35,20 @@ class Qwen(LLM):
 
         return (self.tokenizer.batch_decode(outputs.sequences, skip_special_tokens=False)[0], outputs.attentions, input_len)
 
-    def attentioned_predict(self, prompt: str, output_only: bool=True) -> Tuple[str, torch.Tensor]:
+    def attentioned_predict(self, prompt: str, output_only: bool=True, inner_attention: bool=False) -> Tuple[str, torch.Tensor]:
         """
+        When `inner_attention` set to `True`, returns (output, attention scores in input sequence). 
         - str: The predicted result.
         - torch.Tensor: The token level attention scores with the input, which has the shape [output_len, input_len]
         NOTE: input_len DOES NOT contains bos token.
         """
         outputs, attentions, input_len = self.predict(prompt, return_attn=True)
+
+        if inner_attention:
+            attentions = attentions[0] # Tuple[tensor[1, 32, l, l]]
+            attentions = torch.stack(attentions) # [16, 1, 32, l, l]
+            attentions = attentions.mean(0).squeeze(0).mean(0) # [l, l] bos not removed.
+            return outputs[len(prompt) if output_only else None:], attentions
 
         output_token_attentions = [torch.stack(attn).mean(0).squeeze(0).mean(0).squeeze(0) for attn in attentions[1:]] # each element [l + pos, ]. attentions[1:]: remove the input-inner-attentions.
         
@@ -110,18 +117,19 @@ class Qwen(LLM):
         
         return chunk_align
     
-    def str_level_score(self, splited_input: List[str], splited_output: List[str], attentions: torch.Tensor) -> torch.Tensor:
+    def str_level_score(self, splited_input: List[str], splited_output: List[str], attentions: torch.Tensor, io_attention: bool=True) -> torch.Tensor:
         """
         - splited_input: The splited format of the input. e.g. ["What is the derivative of function", "f(x) = e^x?"]
         - splited_output: The splited format of the output. e.g. ["The derivative of function f(x) = e^x is ] NOTE: Not include input sequence.
         - attentions: tensor of shape [output_len, input_len].
+        - io_attention: set to `True` when calculating input-output attention. When calculating input-input attention, set to `False`.
         NOTE: splited_input, splited_output must be same as input, output.
         """
         input = self.tokenizer("".join(splited_input), return_tensors="pt")["input_ids"][0].to(self.device)
         output = self.tokenizer("".join(splited_output), return_tensors="pt")["input_ids"][0].to(self.device)
 
-        assert input.shape[-1] - 1 == attentions.shape[-1]
-        assert output.shape[-1] - 1 == attentions.shape[0]
+        assert input.shape[-1] - io_attention == attentions.shape[-1]
+        assert output.shape[-1] - io_attention == attentions.shape[0]
 
         input_mapping, output_mapping = self.align_token_str(splited_input, input), self.align_token_str(splited_output, output) # input_mapping: [start, end) of splited_input[i] in the whole input
 

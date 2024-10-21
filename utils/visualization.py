@@ -4,6 +4,15 @@ import networkx as nx
 def split_text(text, line_length):
     return "<br>".join([text[i:i+line_length] for i in range(0, len(text), line_length)])
 
+def weight2color(weight: float):
+    if weight > 0.4:
+        return 'red'
+    if weight > 0.3:
+        return 'orange'
+    if weight > 0.2:
+        return 'yellow'
+    return '#888'
+
 def visualize_tree(data, max_line_length=30, weight_threshold=0.5):
     G = nx.Graph()
 
@@ -39,14 +48,13 @@ def visualize_tree(data, max_line_length=30, weight_threshold=0.5):
 
     # 4. 绘制每条边并设置颜色
     edge_traces = []
-    cnt = 0
+
     for edge in G.edges(data=True):
         x0, y0 = pos[edge[0]]
         x1, y1 = pos[edge[1]]
         
         weight = edge[2]['weight']
-        color = 'red' if weight > weight_threshold else '#888'
-        cnt += (weight > weight_threshold)
+        color = weight2color(weight)
 
         edge_trace = go.Scatter(
             x=[x0, x1, None],
@@ -56,7 +64,6 @@ def visualize_tree(data, max_line_length=30, weight_threshold=0.5):
             mode='lines'
         )
         edge_traces.append(edge_trace)
-    print(cnt)
     # 5. 提取节点的位置
     node_x = []
     node_y = []
@@ -97,3 +104,11 @@ def visualize_tree(data, max_line_length=30, weight_threshold=0.5):
                       margin=dict(b=0, l=0, r=0, t=40))
 
     fig.show()
+
+if __name__ == '__main__':
+    import json
+
+    with open("./tree.json", "r") as fp:
+        data = json.load(fp)
+    
+    visualize_tree(data, weight_threshold=0.05)

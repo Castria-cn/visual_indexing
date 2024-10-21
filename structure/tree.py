@@ -9,10 +9,6 @@ class TreeMeta:
     @abstractmethod
     def build(self, images: ImageLike) -> None:
         pass
-    
-    @abstractmethod
-    def retrieve(self, prompt: str) -> List[int]:
-        pass
 
     @abstractmethod
     def query(self, prompt: str) -> str:

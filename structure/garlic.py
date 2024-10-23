@@ -5,7 +5,7 @@ import numpy as np
 from PIL import Image
 from typing import List, Union, Tuple, Any, Set
 
-from models.vlm import VLMMeta, ImageLike, preprocess, LLM
+from models.meta import VLMMeta, ImageLike, preprocess, LLMMeta
 from structure.tree import TreeMeta
 
 class GarlicNode:
@@ -34,9 +34,10 @@ class GarlicNode:
 
 class GarlicTree(TreeMeta):
     model: VLMMeta
-    def __init__(self, vmodel: VLMMeta, lmodel: Union[VLMMeta, LLM], log: str=None):
+    def __init__(self, vmodel: VLMMeta, lmodel: Union[VLMMeta, LLMMeta], log: str=None, max_tries: int=10):
         self.model = vmodel
         self.lmodel = lmodel
+        self.max_tries = max_tries
         self.prompt_template = "Please read and summarize the following paragraphs carefully, Split your summary into different summary points according to the semantic information in these information points. It is not necessary to generate each summary point for each information point. Gather and organize information into summary points. In each summary point, try to avoid using pronouns like he/she/they and instead use full names. Generate in the format of: * <summary point1>\n* <summary point2>\n* <summary point3>."
         self.interm_template = "Please group the summary points, for each group, give it a subtitle and briefly describe it. Do not repeat the information point in the given paragraphs. Do not list any specific figure or number(For example, percentage / number...). Generate in the format of: **subtitle 1**: <description of subtitle1>\n**subtitle 2**: <description of subtitle2>\n..."
         self.prompt_template_img = "Are there any figures(pie chart, table, bar chart, etc.) in this document? If so, briefly summarize meaning of each figure in this page. Else, reply a single string `No`. Do not list any specific number or value."
@@ -45,12 +46,15 @@ class GarlicTree(TreeMeta):
             with open(self.log, "w") as fp:
                 fp.close()
     
-    def log_str(self, text: Any, newline: int=200) -> None:
+    def log_str(self, text: Any, newline: int=200, tag=None) -> None:
         text = str(text)
         def insert_newline(s, n):
             return '\n'.join([s[i:i+n] for i in range(0, len(s), n)])
         with open(self.log, "a") as fp:
-            fp.write(insert_newline(text, newline))
+            if tag:
+                fp.write(f"<{tag}>\n{insert_newline(text, newline)}\n</{tag}>\n")
+            else:
+                fp.write(insert_newline(text, newline))
     
     def as_json(self, file_path: str) -> None:
         obj = {
@@ -80,9 +84,13 @@ class GarlicTree(TreeMeta):
             pickle.dump(self.layers, fp)
 
     def load(self, file_path: str):
+        """
+        Load the tree from .pkl file.
+        """
         with open(file_path, "rb") as fp:
             self.layers = pickle.load(fp)
             GarlicNode.node_id = sum([len(layer) for layer in self.layers])
+            # calculate adj matrix
             self.adj_matrix = torch.zeros((GarlicNode.node_id, GarlicNode.node_id), dtype=torch.float32)
             for layer in self.layers:
                 for node in layer:
@@ -90,6 +98,11 @@ class GarlicTree(TreeMeta):
                     ids, weights = self._fetch_weights(node)
                     if len(ids):
                         self.adj_matrix[node.id][ids] = weights
+            # id2node mapping    
+            self.id2node = dict()
+            for layer in self.layers:
+                for node in layer:
+                    self.id2node[node.id] = node
             self.log_str(f"Tree loaded.\n")
 
     def _load_leaves(self, file_path: str) -> List[GarlicNode]:
@@ -299,17 +312,20 @@ class GarlicTree(TreeMeta):
         """
         Given prompt and memory, ask LLM(VLM) if the question can be answered.
         """
-        template = ["Can this question be answered by the following information? Response Yes or No in one word. Do not provide any explanation or directly answer the question.",
-                    f"Question: {prompt}\n",
+        template = [self.lmodel.pre_prompts + "Can this question be answered by the following information? Response \"Yes\" or \"No\" in one word. Do not provide any explanation.\n\n",
+                    f"Question: {prompt}\n\n",
                     f"Information:\n",
-                    *[node.desc + "\n" for node in memory]
+                    *[node.desc.replace('<|im_end|>', '') for node in memory],
+                    self.lmodel.post_prompts
                     ]
         if multi_models and images is None:
-            output, attentions = self.lmodel.attentioned_predict("".join(template), return_attn=False, inner_attention=True)
+            self.log_str(f"Raw finish input: {template}\n")
+            output, attentions = self.lmodel.attentioned_predict("".join(template), inner_attention=True, max_new_tokens=100)
             scores = self.lmodel.str_level_score(template, template, attentions, io_attention=False) # [3 + len(memory), 3 + len(memory)]
-            scores = scores[3:, 1] # [len(memory)]
+            self.log_str(str(scores), tag="Score before adjusting")
+            scores = scores[3: -1, 1] # [len(memory)]
             # compensation on position
-            scores = scores * torch.arange(1, len(memory) + 1)
+            scores = scores * torch.arange(1, len(memory) + 1).to(scores)
             return output, scores
         return self.model.predict(template, images), torch.ones(len(memory) + 1)
 
@@ -318,27 +334,36 @@ class GarlicTree(TreeMeta):
         Search the next node to be queried.
         """
         # construct query-node similarity vector
-        similarity = torch.zeros(GarlicNode.node_id) # [N, ]
+        similarity = torch.zeros(GarlicNode.node_id).to(attentions) # [N, ]
         indices = [node.id for node in nodes]
         similarity[indices] = attentions # fill the blanks
 
-        dist = self.adj_matrix @ similarity
+        dist = similarity @ self.adj_matrix.to(similarity)
+
+        self.log_str(similarity, tag="Similarity")
+        self.log_str(dist, tag="Dist")
 
         # find maximum
         dist[list(memory_ids)] = 0.0 # mask the chosen ones
         max_idx = torch.argmax(dist).item()
 
+        self.log_str(f"Search to node: {self.id2node[max_idx].desc}(id = {self.id2node[max_idx].id}), score = {dist[max_idx]}")
+
         return self.id2node[max_idx]
 
-    def query(self, prompt: str) -> str:
+    def query(self, prompt: str, ignore_charts: bool=True, switch_set: bool=False) -> str:
+        tries = 0
         # TODO
         memory: List[GarlicNode] = self.layers[-1]
+        if ignore_charts:
+            memory = [node for node in memory if len(node.children)]
+
         memory_ids = set([node.id for node in memory])
         cur_image = None
         finish_result, attention_score = self.finish_query(prompt, memory, multi_models=True)
-        self.log_str(f"<Initial info>\n" + "\n".join(self._fetch_desc(memory)) + "</Initial info>\n")
-        while 'yes' not in finish_result.lower():
-            self.log_str(f"Finish result: {finish_result}\n")
+        self.log_str(f"<Initial info>\n" + "".join(self._fetch_desc(memory)) + "</Initial info>\n")
+        while 'yes' not in finish_result.lower() and tries <= self.max_tries:
+            self.log_str(finish_result, tag="Finish result")
 
             next_node = self.graph_search(memory, memory_ids, attention_score)
         
@@ -347,8 +372,10 @@ class GarlicTree(TreeMeta):
 
             finish_result, attention_score = self.finish_query(prompt, memory, multi_models=True)
 
+            tries += 1
+
             cur_image = None
-        
+
         memories = "\n".join(reversed(self._fetch_desc(memory)))
 
-        return self.model.predict(f"Answer the question: {prompt}, and give your evidence, with the following information:\n{memories}", cur_image)
+        return self.lmodel.predict(f"Answer the question: {prompt}, and give your evidence, with the following information:\n{memories}")

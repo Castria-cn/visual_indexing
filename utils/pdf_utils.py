@@ -9,7 +9,7 @@ class PDFReader:
     # 10.14 add __geitem__
     def load(self, file_path: str) -> None:
         self.doc = fitz.open(file_path)
-
+        
     def get_text(self, page_num: int) -> str:
         """
         Arguments:
@@ -18,7 +18,6 @@ class PDFReader:
             str: Text on page `page_num`
         """
         assert hasattr(self, 'doc') and page_num < len(self.doc)
-
         return self.doc.load_page(page_num).get_text()
     def get_all_text(self) -> List[str]:
         assert hasattr(self, 'doc')

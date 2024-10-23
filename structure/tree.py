@@ -1,6 +1,6 @@
 from typing import List
 from abc import abstractmethod
-from models.vlm import ImageLike
+from models.meta import ImageLike
 
 class TreeMeta:
     def __init__(self, **kwargs):

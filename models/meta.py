@@ -12,7 +12,7 @@ def preprocess(image: ImageLike) -> List[Image.Image]:
     image = [(Image.open(img) if isinstance(img, str) else img).convert("RGB") for img in image]
     return image
 
-class LLM(ABC):
+class LLMMeta(ABC):
     model: PreTrainedModel
     def __init__(self, **kwargs):
         pass

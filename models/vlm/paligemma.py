@@ -5,9 +5,9 @@ import torch
 from typing import Union, List, Tuple
 from transformers import AutoProcessor, PaliGemmaForConditionalGeneration, PaliGemmaConfig
 
-from models.meta import VLMMeta, ImageLike, preprocess
+from models.base import VLMBase, ImageLike, preprocess
 
-class Paligemma(VLMMeta):
+class Paligemma(VLMBase):
     def __init__(self, model_path: str, device: str="cuda", max_new_tokens: int=8192):
         self.device = device
         self.max_new_tokens = max_new_tokens

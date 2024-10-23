@@ -15,9 +15,9 @@ from tqdm import tqdm
 import sys
 import warnings
 
-from models.meta import VLMMeta, ImageLike, preprocess
+from models.base import VLMBase, ImageLike, preprocess
 
-class LlavaOV(VLMMeta):
+class LlavaOV(VLMBase):
     def __init__(self, model_path: str,
                        model_name: str="llava_qwen",
                        device_map: str="auto",

@@ -6,8 +6,8 @@ from tqdm import tqdm
 from PIL import Image
 import networkx as nx
 import plotly.io as pio
-from typing import List, Union
 import plotly.graph_objects as go
+from typing import List, Union, Dict
 
 def split_text(text, line_length):
     return "<br>".join([text[i:i+line_length] for i in range(0, len(text), line_length)])
@@ -21,11 +21,17 @@ def weight2color(weight: float):
         return 'yellow'
     return '#888'
 
-def images_to_video(images: List[Image.Image], output_path: str, fps: int=30, duration: Union[int, float]=2):
+def images_to_video(images: List[Image.Image], output_path: str, fps: int=30, duration: Union[int, float]=2) -> None:
+    """
+    Transform list of images to video.
+    - images: List[PIL.Image.Image]
+    - output_path: path of the target video
+    - fps: frame per second
+    - duration: duration time of each image
+    """
     assert len(images) != 0
 
     width, height = images[0].size
-    print(images[0].size)
 
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     video_writer = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
@@ -40,7 +46,21 @@ def images_to_video(images: List[Image.Image], output_path: str, fps: int=30, du
 
     video_writer.release()
 
-def visualize_tree(data, max_line_length=30, weight_threshold=0.5, show: bool=False, export_path: str=None, return_img: bool=False):
+def visualize_tree(data: Union[str, Dict],
+                   max_line_length: int=30,
+                   weight_threshold: float=0.02,
+                   show: bool=False,
+                   export_path: str=None,
+                   return_img: bool=False) -> Union[None, Image.Image]:
+    """
+    Visualize the given garlic tree.
+    - data: data exported by `GarlicTree.as_json`
+    - max_line_length: max line length when showing text on the node
+    - weight_threshold: edge weight less than this threshold will be hidden
+    - show: whether to show the image
+    - export_path: path to save the image
+    - return_img: whether to return a `PIL.Image.Image` object
+    """
     if isinstance(data, str):
         with open(data, 'r') as fp:
             data = json.load(fp)
@@ -48,7 +68,6 @@ def visualize_tree(data, max_line_length=30, weight_threshold=0.5, show: bool=Fa
     G = nx.Graph()
 
     colors = list()
-    # 1. 添加节点
     id_to_desc = {}
     for node in data['nodes']:
         node_id = node['id']
@@ -60,14 +79,14 @@ def visualize_tree(data, max_line_length=30, weight_threshold=0.5, show: bool=Fa
         G.add_node(node_id, layer=layer)
         id_to_desc[node_id] = split_text(desc, max_line_length)
 
-    # 2. 添加边
     for edge in data['edges']:
         id0, id1, weight = edge
+        if weight_threshold < weight_threshold:
+            continue
         G.add_edge(id0, id1, weight=weight)
 
     layers = nx.get_node_attributes(G, 'layer')
 
-    # 3. 创建布局
     pos = {}
     layer_nodes = {}
     for node, layer in layers.items():
@@ -81,7 +100,6 @@ def visualize_tree(data, max_line_length=30, weight_threshold=0.5, show: bool=Fa
         for i, node in enumerate(nodes_in_layer):
             pos[node] = (x_positions[i], y_position)
 
-    # 4. 绘制每条边并设置颜色
     edge_traces = []
 
     for edge in G.edges(data=True):
@@ -99,7 +117,7 @@ def visualize_tree(data, max_line_length=30, weight_threshold=0.5, show: bool=Fa
             mode='lines'
         )
         edge_traces.append(edge_trace)
-    # 5. 提取节点的位置
+
     node_x = []
     node_y = []
     node_descriptions = []
@@ -110,7 +128,6 @@ def visualize_tree(data, max_line_length=30, weight_threshold=0.5, show: bool=Fa
         node_y.append(y)
         node_descriptions.append(id_to_desc[node])
 
-    # 6. 创建节点
     node_trace = go.Scatter(
         x=node_x, y=node_y,
         mode='markers+text',
@@ -131,7 +148,6 @@ def visualize_tree(data, max_line_length=30, weight_threshold=0.5, show: bool=Fa
             ),
         ))
 
-    # 7. 创建图表
     fig = go.Figure(data=edge_traces + [node_trace])
 
     fig.update_layout(title='Multi-layer Tree-like Layout Visualization (Top-Down)',
@@ -151,7 +167,17 @@ def visualize_tree(data, max_line_length=30, weight_threshold=0.5, show: bool=Fa
 
         return image
     
-def animate(data, video_path: str, weight_threshold=0.5, duration: Union[int, float]=1.5):
+def animate(data: Union[str, Dict],
+            video_path: str,
+            weight_threshold: float=0.02,
+            duration: Union[int, float]=1.5):
+    """
+    Animate the query process.
+    - data: data exported by `GarlicTree.query`
+    - video_path: path to save the video
+    - weight_threshold: edge weight less than this threshold will be hidden
+    - duration: duration time of each step
+    """
     if isinstance(data, str):
         with open(data, 'r') as fp:
             data = json.load(fp)
@@ -161,11 +187,14 @@ def animate(data, video_path: str, weight_threshold=0.5, duration: Union[int, fl
     selected = set(data['init'])
     data['nodes'] = [dct | {"selected": dct["id"] in selected} for dct in data['nodes']]
 
-    frames = [visualize_tree(data, return_img=True)]
+    frames = [visualize_tree(data, return_img=True, weight_threshold=weight_threshold)]
     
     for new_node in tqdm(data['traj'], 'Exporting video...'):
         selected.add(new_node)
         data['nodes'] = [dct | {"selected": dct["id"] in selected} for dct in data['nodes']]
-        frames.append(visualize_tree(data, return_img=True))
+        frames.append(visualize_tree(data, return_img=True, weight_threshold=weight_threshold))
     
     images_to_video(frames, output_path=video_path, fps=30, duration=duration)
+
+if __name__ == '__main__':
+    animate("traj.json", video_path="1.mp4")

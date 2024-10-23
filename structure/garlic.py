@@ -5,14 +5,18 @@ import numpy as np
 from PIL import Image
 from typing import List, Union, Tuple, Any, Set
 
-from models.meta import VLMMeta, ImageLike, preprocess, LLMMeta
-from structure.tree import TreeMeta
+from models.base import VLMBase, ImageLike, preprocess, LLMBase
+from structure.tree import TreeBase
 
 class GarlicNode:
     node_id = 0
     children: List[Any]
 
     def __init__(self, image: Union[ImageLike, None]=None, desc: Union[str, None]=None) -> None:
+        """
+        - image: image stored in this node
+        - desc: text description of the node
+        """
         self.image = image
         self.desc = desc
         self.children = []
@@ -21,7 +25,7 @@ class GarlicNode:
         GarlicNode.node_id += 1
     
     @property
-    def image_num(self) -> int: # BUG
+    def image_num(self) -> int: # buggy
         if len(self.children) == 0:
             return 1
         if not hasattr(self, 'image_num'):
@@ -30,11 +34,21 @@ class GarlicNode:
         return self._image_num
     
     def add_children(self, children: List[Any]) -> None:
+        """
+        Add childern to this node.
+        - children: each item a tuple (GarlicNode, float), where float is the edge weight.
+        """
         self.children.extend(children)
 
-class GarlicTree(TreeMeta):
-    model: VLMMeta
-    def __init__(self, vmodel: VLMMeta, lmodel: Union[VLMMeta, LLMMeta], log: str=None, max_tries: int=10):
+class GarlicTree(TreeBase):
+    model: VLMBase
+    def __init__(self, vmodel: VLMBase, lmodel: Union[VLMBase, LLMBase], log: str=None, max_tries: int=10):
+        """
+        - vmodel: VLM applied to summarize the image input.
+        - lmodel: LLM applied to summarize the upper nodes.
+        - log: output path of the log file
+        - max_tries: Max new nodes when doing query
+        """
         self.model = vmodel
         self.lmodel = lmodel
         self.max_tries = max_tries
@@ -46,7 +60,7 @@ class GarlicTree(TreeMeta):
             with open(self.log, "w") as fp:
                 fp.close()
     
-    def log_str(self, text: Any, newline: int=200, tag=None) -> None:
+    def _log_str(self, text: Any, newline: int=200, tag=None) -> None:
         text = str(text)
         def insert_newline(s, n):
             return '\n'.join([s[i:i+n] for i in range(0, len(s), n)])
@@ -56,10 +70,16 @@ class GarlicTree(TreeMeta):
             else:
                 fp.write(insert_newline(text, newline))
     
-    def as_json(self, file_path: str) -> None:
+    def as_json(self, file_path: str, init: Union[List[int], None]=None, traj: Union[List[int], None]=None) -> None:
+        """
+        Export the Garlic tree.
+        - file_path: output path
+        - init: When visualize query process, the initial nodes
+        - traj: When visualize query process, the trajectory of new nodes 
+        """
         obj = {
-            "nodes": [],
-            "edges": []
+            "nodes": list(),
+            "edges": list()
         }
         for i, layer in enumerate(self.layers):
             for node in layer:
@@ -69,8 +89,13 @@ class GarlicTree(TreeMeta):
                     "layer": i
                 })
                 for (child, weight) in node.children:
-                    self.log_str(str(child))
+                    self._log_str(str(child))
                     obj["edges"].append([node.id, child.id, weight])
+        
+        if init:
+            obj["init"] = init
+        if traj:
+            obj["traj"] = traj
         
         with open(file_path, "w") as fp:
             json.dump(obj, fp)
@@ -103,13 +128,13 @@ class GarlicTree(TreeMeta):
             for layer in self.layers:
                 for node in layer:
                     self.id2node[node.id] = node
-            self.log_str(f"Tree loaded.\n")
+            self._log_str(f"Tree loaded.\n")
 
     def _load_leaves(self, file_path: str) -> List[GarlicNode]:
         with open(file_path, "rb") as fp:
             leaves = pickle.load(fp)
             GarlicNode.node_id = len(leaves)
-            self.log_str(f"{len(leaves)} leaves loaded.\n")
+            self._log_str(f"{len(leaves)} leaves loaded.\n")
         return leaves
 
     def _fetch_images(self, nodes: List[GarlicNode]) -> ImageLike:
@@ -158,9 +183,9 @@ class GarlicTree(TreeMeta):
             *texts,
             self.lmodel.post_prompts
         ]
-        self.log_str("Raw inputs: \n" + str(model_inputs) + "\n")
+        self._log_str("Raw inputs: \n" + str(model_inputs) + "\n")
         new_text, attentions = self.lmodel.attentioned_predict("".join(model_inputs))
-        self.log_str(f"Raw prediction: {new_text}")
+        self._log_str(f"Raw prediction: {new_text}")
         IPs = self._parse_response(new_text)
         scores = self.lmodel.str_level_score(model_inputs, IPs, attentions) # [len(IPs), len(nodes) + 2]
         scores = scores[:, 1: -1] # remove chat template
@@ -169,12 +194,12 @@ class GarlicTree(TreeMeta):
         assert len(nodes) == scores.shape[1]
 
         if torch.any(torch.isnan(scores)):
-            self.log_str("!!!Raw inputs: \n" + "".join(model_inputs) + "\n")
+            self._log_str("!!!Raw inputs: \n" + "".join(model_inputs) + "\n")
             new_text, attentions = self.lmodel.attentioned_predict("".join(model_inputs))
-            self.log_str(f"!!!Raw prediction: {new_text}")
-            self.log_str(torch.any(torch.isnan(attentions)))
-            self.log_str(f"attentions: {attentions}")
-            self.log_str(f"scores: {scores}")
+            self._log_str(f"!!!Raw prediction: {new_text}")
+            self._log_str(torch.any(torch.isnan(attentions)))
+            self._log_str(f"attentions: {attentions}")
+            self._log_str(f"scores: {scores}")
 
         return IPs, scores
     
@@ -203,7 +228,7 @@ class GarlicTree(TreeMeta):
         ...
         NOTE: "".join(result) MUST EQUALS `response`
         """
-        self.log_str(f"Raw response: {response}")
+        self._log_str(f"Raw response: {response}")
         positions = [i for i, c in enumerate(response) if c == split_char]
         if len(positions) <= 1:
             return [response]
@@ -214,7 +239,7 @@ class GarlicTree(TreeMeta):
             else:
                 result.append(response[positions[i]: positions[i + 1] if i < len(positions) - 1 else None])
         
-        self.log_str(f"Parsed reponse: {result}")
+        self._log_str(f"Parsed reponse: {result}")
 
         assert "".join(result) == response
 
@@ -227,7 +252,7 @@ class GarlicTree(TreeMeta):
         descs, scores = self.merge_text(nodes, layer)
         new_image = [None for i in range(len(descs))] # self.merge_images(nodes, layer)
         smry = "<NEXT_NODE>\n".join(descs)
-        self.log_str(f"****************************************************************************\nSummary:\n {smry}\n****************************************************************************\n")
+        self._log_str(f"****************************************************************************\nSummary:\n {smry}\n****************************************************************************\n")
         new_nodes = [GarlicNode(new_image, desc) for desc in descs]
         # TODO add_children and weight in GARLIC
         for i in range(len(new_nodes)): 
@@ -243,7 +268,7 @@ class GarlicTree(TreeMeta):
             token_len += approx_token_lens[idx + page_num]
             page_num += 1
         page_num = max(2, page_num)
-        self.log_str(f"Select {page_num} pages, approx token = {token_len}\n")
+        self._log_str(f"Select {page_num} pages, approx token = {token_len}\n")
         
         return page_num
     
@@ -261,14 +286,14 @@ class GarlicTree(TreeMeta):
         if len(leaves) == 0:
             for i, image in enumerate(images):
                 w, h = image.size
-                self.log_str(f"Predicting page {i}...\n")
+                self._log_str(f"Predicting page {i}...\n")
                 response = self.model.predict(self.get_prompt_template(0), image)
                 IPs = self._parse_response(response)
                 leaves.extend([GarlicNode(image=None, desc=ip) for ip in IPs])
                 # leaves.append(GarlicNode(image=image, desc=self.model.predict(self.get_prompt_template(0), image))) # Original
                 self.image_descs.append(GarlicNode(image=image, desc=self.model.predict(self.prompt_template_img, image)))
-                self.log_str(f"Summarize of page {i}: \n***************************************************************************************************\n{leaves[-1].desc}\n")
-                self.log_str(f"Summarize of figure: \n{self.image_descs[-1].desc}\n***************************************************************************************************\n")
+                self._log_str(f"Summarize of page {i}: \n***************************************************************************************************\n{leaves[-1].desc}\n")
+                self._log_str(f"Summarize of figure: \n{self.image_descs[-1].desc}\n***************************************************************************************************\n")
 
             self._save_leaves(leaves, "leaves.pkl")
         self.layers.append(leaves)
@@ -304,7 +329,7 @@ class GarlicTree(TreeMeta):
                 if len(ids):
                     self.adj_matrix[node.id][ids] = weights
         
-        self.log_str(str(self.adj_matrix))
+        self._log_str(str(self.adj_matrix))
 
         self._save_tree("tree.pkl")
         
@@ -319,10 +344,10 @@ class GarlicTree(TreeMeta):
                     self.lmodel.post_prompts
                     ]
         if multi_models and images is None:
-            self.log_str(f"Raw finish input: {template}\n")
+            self._log_str(f"Raw finish input: {template}\n")
             output, attentions = self.lmodel.attentioned_predict("".join(template), inner_attention=True, max_new_tokens=100)
             scores = self.lmodel.str_level_score(template, template, attentions, io_attention=False) # [3 + len(memory), 3 + len(memory)]
-            self.log_str(str(scores), tag="Score before adjusting")
+            self._log_str(str(scores), tag="Score before adjusting")
             scores = scores[3: -1, 1] # [len(memory)]
             # compensation on position
             scores = scores * torch.arange(1, len(memory) + 1).to(scores)
@@ -340,35 +365,41 @@ class GarlicTree(TreeMeta):
 
         dist = similarity @ self.adj_matrix.to(similarity)
 
-        self.log_str(similarity, tag="Similarity")
-        self.log_str(dist, tag="Dist")
+        self._log_str(similarity, tag="Similarity")
+        self._log_str(dist, tag="Dist")
 
         # find maximum
         dist[list(memory_ids)] = 0.0 # mask the chosen ones
         max_idx = torch.argmax(dist).item()
 
-        self.log_str(f"Search to node: {self.id2node[max_idx].desc}(id = {self.id2node[max_idx].id}), score = {dist[max_idx]}")
+        self._log_str(f"Search to node: {self.id2node[max_idx].desc}(id = {self.id2node[max_idx].id}), score = {dist[max_idx]}")
 
         return self.id2node[max_idx]
 
-    def query(self, prompt: str, ignore_charts: bool=True, switch_set: bool=False) -> str:
+    def query(self, prompt: str, ignore_charts: bool=True, switch_set: bool=False, export_traj: Union[None, str]=None) -> str:
         tries = 0
         # TODO
         memory: List[GarlicNode] = self.layers[-1]
         if ignore_charts:
             memory = [node for node in memory if len(node.children)]
+        
+        if export_traj:
+            init = [node.id for node in memory]
+            traj = list()
 
         memory_ids = set([node.id for node in memory])
         cur_image = None
         finish_result, attention_score = self.finish_query(prompt, memory, multi_models=True)
-        self.log_str(f"<Initial info>\n" + "".join(self._fetch_desc(memory)) + "</Initial info>\n")
+        self._log_str(f"<Initial info>\n" + "".join(self._fetch_desc(memory)) + "</Initial info>\n")
         while 'yes' not in finish_result.lower() and tries <= self.max_tries:
-            self.log_str(finish_result, tag="Finish result")
+            self._log_str(finish_result, tag="Finish result")
 
             next_node = self.graph_search(memory, memory_ids, attention_score)
         
             memory.append(next_node)
             memory_ids.add(next_node.id)
+            if export_traj:
+                traj.append(next_node.id)
 
             finish_result, attention_score = self.finish_query(prompt, memory, multi_models=True)
 
@@ -377,5 +408,8 @@ class GarlicTree(TreeMeta):
             cur_image = None
 
         memories = "\n".join(reversed(self._fetch_desc(memory)))
+
+        if export_traj:
+            self.as_json(export_traj, init, traj)
 
         return self.lmodel.predict(f"Answer the question: {prompt}, and give your evidence, with the following information:\n{memories}")

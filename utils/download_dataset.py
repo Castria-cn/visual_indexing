@@ -2,7 +2,10 @@ import requests
 import jsonlines
 from tqdm import tqdm
 
-def download_dataset(jsonline_file: str, cache_dir: str) -> None:
+def download_paperdoc(jsonline_file: str, cache_dir: str) -> None:
+    """
+    Download paperdoc dataset.
+    """
     with jsonlines.open(jsonline_file) as reader:
         for obj in tqdm(reader):
             try:
@@ -16,6 +19,3 @@ def download_dataset(jsonline_file: str, cache_dir: str) -> None:
                 break
             except Exception as e:
                 print(e)
-    
-if __name__ == '__main__':
-    download_dataset("data/Test_test.jsonl", "data")

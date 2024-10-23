@@ -1,8 +1,8 @@
 import os
 from typing import Any, List, Union
 import jsonlines
-from eval.meta import VLEvaluator
-from models.meta import ImageLike
+from eval.base import VLEvaluator
+from models.base import ImageLike
 from utils.pdf_utils import PDFReader
 
 class PaperDocEvaluator(VLEvaluator):

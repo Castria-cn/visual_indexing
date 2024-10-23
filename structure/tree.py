@@ -1,8 +1,8 @@
 from typing import List
 from abc import abstractmethod
-from models.meta import ImageLike
+from models.base import ImageLike
 
-class TreeMeta:
+class TreeBase:
     def __init__(self, **kwargs):
         pass
     

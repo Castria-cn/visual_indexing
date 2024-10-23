@@ -1,8 +1,11 @@
+"""
+The base class of vision language dataset evaluator.
+"""
 import inspect
 from typing import List, Any, Dict, Union
 from abc import abstractmethod
 from tqdm import tqdm
-from models.meta import ImageLike
+from models.base import ImageLike
 
 class UnpredictableError(Exception):
     def __init__(self, message):
@@ -22,7 +25,7 @@ class VLEvaluator:
             *other_keys, ...
         })
 
-        Or, for overhead consideration `self.dataset` can be a generator, each time yield a dict.
+        For overhead consideration `self.dataset` can be a generator, each time yield a dict.
         """
         pass
     
@@ -35,6 +38,9 @@ class VLEvaluator:
     
     @abstractmethod
     def metric(self, predict: str, answer: Union[str, List[str]]) -> Any:
+        """
+        Calculate metric. Metric can be any type, which will be returned by `run`.
+        """
         pass
     
     def call_unpredictable(self, message):
@@ -42,6 +48,18 @@ class VLEvaluator:
     
     
     def run(self, samples: int=0) -> List[Dict]:
+        """
+        Run the evaluation process.
+        Outputs:
+        List[Dict], where Dict has the format:
+        {
+            "success": bool,
+            "qid": int,
+            "query": str,
+            "answer": str | List[str],
+            "metric": Any
+        }
+        """
         assert hasattr(self, 'dataset'), "Must call `load_dataset` first!"
 
         if inspect.isgeneratorfunction(self.dataset):

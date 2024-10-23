@@ -1,9 +1,9 @@
 import torch
 from typing import List, Tuple
-from models.meta import LLMMeta
+from models.base import LLMBase
 from transformers import LlamaForCausalLM, AutoTokenizer
 
-class Llama(LLMMeta):
+class Llama(LLMBase):
     def __init__(self, model_path: str, device_map: str="cuda", max_new_tokens: int=1024):
         self.device = device_map
         self.max_new_tokens = max_new_tokens

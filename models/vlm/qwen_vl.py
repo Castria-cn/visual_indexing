@@ -1,8 +1,8 @@
-from models.meta import VLMMeta, ImageLike, preprocess
+from models.base import VLMBase, ImageLike, preprocess
 from qwen_vl_utils import process_vision_info
 from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor
 
-class Qwen2VL(VLMMeta):
+class Qwen2VL(VLMBase):
     def __init__(self, model_path: str,
                        device_map: str="auto",
                        max_new_tokens: int=8192):

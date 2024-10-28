@@ -9,8 +9,10 @@ import plotly.io as pio
 import plotly.graph_objects as go
 from typing import List, Union, Dict, Tuple
 
-def split_text(text, line_length):
-    return "<br>".join([text[i:i+line_length] for i in range(0, len(text), line_length)])
+def split_text(text, line_length, splitor: str="<br>", return_list: bool=False) -> Union[List, str]:
+    if return_list:
+        return [text[i:i+line_length] for i in range(0, len(text), line_length)]
+    return splitor.join([text[i:i+line_length] for i in range(0, len(text), line_length)])
 
 def weight2color(weight: float):
     if weight > 0.4:
@@ -21,12 +23,15 @@ def weight2color(weight: float):
         return 'yellow'
     return '#888'
 
-def draw_text_on_image(image: Image.Image, text: str, rect: Tuple[float, float], font_size: int = 20) -> Image.Image:
+def draw_text_on_image(image: Image.Image,
+                       text: str,
+                       rect: Tuple[float, float],
+                       font_size: int=20,
+                       max_length: int=20) -> Image.Image:
     draw = ImageDraw.Draw(image)
-
-    font = ImageFont.load_default()
-
-    draw.text(rect, text, fill="black", font=font, font_size=font_size)
+    w, h = image.size
+    text = split_text(text, line_length=max_length, splitor="\n")
+    draw.text((int(w * rect[0]), int(h * rect[1])), text, fill=(0, 0, 0), font_size=font_size)
 
     return image
 
@@ -208,11 +213,11 @@ def animate(data: Union[str, Dict],
         selected.add(new_node)
         data['nodes'] = [dct | {"selected": dct["id"] in selected} for dct in data['nodes']]
         img = visualize_tree(data, return_img=True, weight_threshold=weight_threshold)
-        img = draw_text_on_image(img, node2desc[new_node], (0.5, 0.5))
+        img = draw_text_on_image(img, node2desc[new_node], (0.6, 0.6), font_size=30, max_length=30)
         frames.append(img)
     
     images_to_video(frames, output_path=video_path, fps=30, duration=duration)
 
 if __name__ == '__main__':
-    visualize_tree("tmp/traj.json", show=True, weight_threshold=0.1)
-    # animate("tmp/traj.json", video_path="1.mp4")
+    # visualize_tree("tmp/traj.json", show=True, weight_threshold=0.1)
+    animate("tmp/traj.json", video_path="1.mp4", duration=2.5)

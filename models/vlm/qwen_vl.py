@@ -2,12 +2,12 @@ import torch
 from typing import Union, Tuple, List
 from models.base import VLMBase, ImageLike, preprocess
 from qwen_vl_utils import process_vision_info
-from transformers import Qwen2VLForConditionalGeneration, Qwen2VLProcessor, AutoProcessor
+from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
 
 class Qwen2VL(VLMBase):
     def __init__(self, model_path: str,
-                       device_map: str="auto",
-                       max_new_tokens: int=2048):
+                       device_map: str="cuda",
+                       max_new_tokens: int=4096):
         self.model = Qwen2VLForConditionalGeneration.from_pretrained(model_path,
                                                      torch_dtype="auto",
                                                      device_map="auto",)
@@ -23,7 +23,6 @@ class Qwen2VL(VLMBase):
             padding=True,
             return_tensors="pt"
         ).to("cuda")
-        print(f"<{prompt}>")
 
         input_len = model_inputs["input_ids"].shape[-1]
 
@@ -34,41 +33,6 @@ class Qwen2VL(VLMBase):
         outputs = self.model.generate(**model_inputs, max_new_tokens=(self.max_new_tokens if max_new_tokens == 0 else max_new_tokens), output_attentions=True, return_dict_in_generate=True, do_sample=False)
 
         return (self.processor.batch_decode(outputs.sequences, skip_special_tokens=False)[0], outputs.attentions, input_len)
-    
-    def _text_predict_ori(self, prompt: str) -> str:
-        messages = [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": prompt},
-                ],
-            }
-        ]
-        
-        # Preparation for inference
-        text = self.processor.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
-        )
-
-        print(f"<{text}>")
-
-        inputs = self.processor(
-            text=[text],
-            padding=True,
-            return_tensors="pt",
-        )
-        inputs = inputs.to("cuda")
-
-        # Inference: Generation of the output
-        generated_ids = self.model.generate(**inputs, max_new_tokens=self.max_new_tokens)
-        generated_ids_trimmed = [
-            out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-        ]
-        output_text = self.processor.batch_decode(
-            generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-        )
-        
-        return output_text[0]
     
     def attentioned_predict(self, prompt: str, output_only: bool=True, inner_attention: bool=False, max_new_tokens: int=0) -> Tuple[str, torch.Tensor]:
         """
@@ -98,6 +62,10 @@ class Qwen2VL(VLMBase):
         Now we select the first method: normalize the first k components by dividing their sum.
         """
         output_token_attentions = torch.stack([attn[1:input_len] / attn[1:input_len].sum() for attn in output_token_attentions]) # [output_tokens, input_len]. attn[1: input_len]: remove the input bos token.
+
+        with open("zero_log.txt", "a") as fp:
+            fp.write(f"attention sum = {output_token_attentions.sum()}\n")
+            fp.close()
 
         return outputs[len(prompt) if output_only else None:], output_token_attentions
 
@@ -158,7 +126,7 @@ class Qwen2VL(VLMBase):
 
         # Step 2. Align original string with tokens
         full = "".join(splited)
-        token_offsets = self.processor(full, return_offsets_mapping=True)["offset_mapping"][1:] # remove bos
+        token_offsets = self.processor.tokenizer(full, return_offsets_mapping=True)["offset_mapping"][1:] # remove bos
         token_offsets: List[Tuple[int, int]] = [(token_offsets[i][0], token_offsets[i + 1][0] if i < len(token_offsets) - 1 else len(token_offsets)) for i in range(len(token_offsets))]
 
         # Step 3. Align splited with tokens
@@ -184,10 +152,12 @@ class Qwen2VL(VLMBase):
                 end_ = max(chunk_align[chunk_ptr][1], i + 1)
                 chunk_align[chunk_ptr] = (start_, end_)
         
-        # print("Align result:")
-        # for i, (start, end) in enumerate(chunk_align):
-        #     seq = tokens[start: end]
-        #     print(f"[{splited[i]}] aligned to [{self.tokenizer.batch_decode(seq)}]")
+        with open("align_log.txt", "a") as fp:
+            fp.write("Align result:\n")
+            fp.write(f"token offsets: {token_offsets}\n")
+            for i, (start, end) in enumerate(chunk_align):
+                seq = tokens[start: end]
+                fp.write(f"[{splited[i]}] aligned to [{self.processor.tokenizer.batch_decode(seq)}]\n")
         
         return chunk_align
     
@@ -199,8 +169,8 @@ class Qwen2VL(VLMBase):
         - io_attention: set to `True` when calculating input-output attention. When calculating input-input attention, set to `False`.
         NOTE: splited_input, splited_output must be same as input, output.
         """
-        input = self.processor("".join(splited_input), return_tensors="pt")["input_ids"][0].to(self.device)
-        output = self.processor("".join(splited_output), return_tensors="pt")["input_ids"][0].to(self.device)
+        input = self.processor(text=["".join(splited_input)], return_tensors="pt")["input_ids"][0].to(self.device_map)
+        output = self.processor(text=["".join(splited_output)], return_tensors="pt")["input_ids"][0].to(self.device_map)
 
         assert input.shape[-1] - io_attention == attentions.shape[-1]
         assert output.shape[-1] - io_attention == attentions.shape[0]
@@ -216,7 +186,7 @@ class Qwen2VL(VLMBase):
                 input_scores.append(block.mean(0).sum().item())
             scores.append(input_scores)
         
-        scores = torch.tensor(scores).to(self.device)
+        scores = torch.tensor(scores).to(self.device_map)
 
         if torch.any(torch.isnan(scores)):
             with open("nan_log.txt", "a") as fp:

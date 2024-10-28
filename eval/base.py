@@ -1,6 +1,3 @@
-"""
-The base class of vision language dataset evaluator.
-"""
 import inspect
 from typing import List, Any, Dict, Union
 from abc import abstractmethod
@@ -25,12 +22,12 @@ class VLEvaluator:
             *other_keys, ...
         })
 
-        For overhead consideration `self.dataset` can be a generator, each time yield a dict.
+        Or, for overhead consideration `self.dataset` can be a generator, each time yield a dict.
         """
         pass
     
     @abstractmethod
-    def predict(self, images: ImageLike, query: str) -> str:
+    def predict(self, images: ImageLike, query: str, **kwargs) -> str:
         """
         Make prediction. When unable to predict, call `call_unpredictable`.
         """
@@ -38,27 +35,16 @@ class VLEvaluator:
     
     @abstractmethod
     def metric(self, predict: str, answer: Union[str, List[str]]) -> Any:
-        """
-        Calculate metric. Metric can be any type, which will be returned by `run`.
-        """
         pass
     
-    def call_unpredictable(self, message):
+    def call_unpredictable(self, message: str):
         raise UnpredictableError(message)
     
     
-    def run(self, samples: int=0) -> List[Dict]:
+    def run(self, samples: int=0, extra_keys: List[str]=None) -> List[Dict]:
         """
-        Run the evaluation process.
-        Outputs:
-        List[Dict], where Dict has the format:
-        {
-            "success": bool,
-            "qid": int,
-            "query": str,
-            "answer": str | List[str],
-            "metric": Any
-        }
+        - samples: #samples to be evaluated
+        - extra_keys: extra keys to be passed from dataset item to predict.
         """
         assert hasattr(self, 'dataset'), "Must call `load_dataset` first!"
 
@@ -77,7 +63,10 @@ class VLEvaluator:
                 images, query, answer = item["images"], item["query"], item["answer"]
                 qid = id_ if "qid" not in item else item["qid"]
                 id_ += 1
-                result = self.predict(images, query)
+                extra_dict = {}
+                if extra_keys:
+                    extra_dict = {item[key] for key in extra_keys}
+                result = self.predict(images, query, **extra_dict)
                 metric = self.metric(result, answer)
                 result.append({
                     "success": True,

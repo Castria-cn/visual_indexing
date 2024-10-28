@@ -3,11 +3,11 @@ import cv2
 import json
 import numpy as np
 from tqdm import tqdm
-from PIL import Image
+from PIL import Image, ImageDraw, ImageFont
 import networkx as nx
 import plotly.io as pio
 import plotly.graph_objects as go
-from typing import List, Union, Dict
+from typing import List, Union, Dict, Tuple
 
 def split_text(text, line_length):
     return "<br>".join([text[i:i+line_length] for i in range(0, len(text), line_length)])
@@ -20,6 +20,15 @@ def weight2color(weight: float):
     if weight > 0.2:
         return 'yellow'
     return '#888'
+
+def draw_text_on_image(image: Image.Image, text: str, rect: Tuple[float, float], font_size: int = 20) -> Image.Image:
+    draw = ImageDraw.Draw(image)
+
+    font = ImageFont.load_default()
+
+    draw.text(rect, text, fill="black", font=font, font_size=font_size)
+
+    return image
 
 def images_to_video(images: List[Image.Image], output_path: str, fps: int=30, duration: Union[int, float]=2) -> None:
     """
@@ -69,10 +78,12 @@ def visualize_tree(data: Union[str, Dict],
 
     colors = list()
     id_to_desc = {}
+    id2node = {}
     for node in data['nodes']:
         node_id = node['id']
         desc = node['desc']
         layer = node['layer']
+        id2node[node_id] = node
         
         if 'selected' in node:
             colors.append('red' if node['selected'] else 'blue')
@@ -83,6 +94,7 @@ def visualize_tree(data: Union[str, Dict],
         id0, id1, weight = edge
         if weight_threshold < weight_threshold:
             continue
+        assert id2node[id0]['layer'] != id2node[id1]['layer'], f"Assertion: layer of node ({id0}, {id1}) should not be same!"
         G.add_edge(id0, id1, weight=weight)
 
     layers = nx.get_node_attributes(G, 'layer')
@@ -181,6 +193,9 @@ def animate(data: Union[str, Dict],
     if isinstance(data, str):
         with open(data, 'r') as fp:
             data = json.load(fp)
+    node2desc = {}
+    for node in data['nodes']:
+        node2desc[node['id']] = node['desc']
     assert "init" in data, "Animate retrieval must have `init` in data!"
     assert "traj" in data, "Animate retrieval must have `traj` in data!"
     
@@ -192,9 +207,12 @@ def animate(data: Union[str, Dict],
     for new_node in tqdm(data['traj'], 'Exporting video...'):
         selected.add(new_node)
         data['nodes'] = [dct | {"selected": dct["id"] in selected} for dct in data['nodes']]
-        frames.append(visualize_tree(data, return_img=True, weight_threshold=weight_threshold))
+        img = visualize_tree(data, return_img=True, weight_threshold=weight_threshold)
+        img = draw_text_on_image(img, node2desc[new_node], (0.5, 0.5))
+        frames.append(img)
     
     images_to_video(frames, output_path=video_path, fps=30, duration=duration)
 
 if __name__ == '__main__':
-    animate("traj.json", video_path="1.mp4")
+    visualize_tree("tmp/traj.json", show=True, weight_threshold=0.1)
+    # animate("tmp/traj.json", video_path="1.mp4")

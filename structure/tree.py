@@ -1,4 +1,4 @@
-from typing import List
+from typing import Any
 from abc import abstractmethod
 from models.base import ImageLike
 
@@ -7,9 +7,13 @@ class TreeBase:
         pass
     
     @abstractmethod
-    def build(self, images: ImageLike) -> None:
+    def build(self, images: ImageLike, **kwargs) -> None:
         pass
 
     @abstractmethod
-    def query(self, prompt: str) -> str:
+    def query(self, prompt: str, **kwargs) -> str:
+        pass
+
+    @abstractmethod
+    def load(self, archive: Any) -> None:
         pass

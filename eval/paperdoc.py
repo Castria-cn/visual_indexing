@@ -32,7 +32,7 @@ class PaperDocEvaluator(VLEvaluator):
                     query = obj["Query"]
                     answer = obj["Answer"]
                     yield {
-                        "images": images,
+                        "corpus": images,
                         "query": query,
                         "answer": answer,
                         "pdf_name": obj["PDF name"]

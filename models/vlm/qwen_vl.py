@@ -2,7 +2,7 @@ import torch
 from typing import Union, Tuple, List
 from models.base import VLMBase, ImageLike, preprocess
 from qwen_vl_utils import process_vision_info
-from transformers import Qwen2VLForConditionalGeneration, AutoProcessor
+from transformers import Qwen2VLForConditionalGeneration, AutoProcessor, Qwen2VLProcessor
 
 class Qwen2VL(VLMBase):
     def __init__(self, model_path: str,

@@ -1,7 +1,9 @@
+import time
 import inspect
 from typing import List, Any, Dict, Union
 from abc import abstractmethod
 from tqdm import tqdm
+import pickle
 from models.base import ImageLike
 
 class UnpredictableError(Exception):
@@ -10,13 +12,24 @@ class UnpredictableError(Exception):
         super().__init__(self.message)
 
 class VLEvaluator:
+    def __init__(self, log: str="tmp/eval_log.txt"):
+        self.log = log
+        with open(log, "w") as fp:
+            fp.close()
+    
+    def log_str(self, text: str):
+        text = str(text)
+        with open(self.log, "a") as fp:
+            fp.write(text)
+            fp.close()
+
     @abstractmethod
     def load_dataset(self, **kwargs):
         """
         Set `self.dataset` to the following format:
         List({
             "qid": int(optional),
-            "images": ImageLike,
+            "corpus": Any,
             "query": str,
             "answer": str | List[str],
             *other_keys, ...
@@ -41,10 +54,9 @@ class VLEvaluator:
         raise UnpredictableError(message)
     
     
-    def run(self, samples: int=0, extra_keys: List[str]=None) -> List[Dict]:
+    def run(self, samples: int=0) -> List[Dict]:
         """
         - samples: #samples to be evaluated
-        - extra_keys: extra keys to be passed from dataset item to predict.
         """
         assert hasattr(self, 'dataset'), "Must call `load_dataset` first!"
 
@@ -54,31 +66,41 @@ class VLEvaluator:
         else:
             dataset = self.dataset
 
-        result = list()
+        results = list()
         id_ = 0
         for item in tqdm(iter(dataset)):
             if samples != 0 and id_ >= samples:
                 break
             try:
-                images, query, answer = item["images"], item["query"], item["answer"]
+                images, query, answer = item.pop("corpus"), item.pop("query"), item.pop("answer")
                 qid = id_ if "qid" not in item else item["qid"]
                 id_ += 1
-                extra_dict = {}
-                if extra_keys:
-                    extra_dict = {item[key] for key in extra_keys}
-                result = self.predict(images, query, **extra_dict)
-                metric = self.metric(result, answer)
-                result.append({
+                start_time = time.perf_counter()
+                result = self.predict(images, query, **item)
+                end_time = time.perf_counter()
+                metric = self.metric(result, answer, **item)
+                results.append({
                     "success": True,
                     "qid": qid,
                     "query": query,
                     "answer": answer,
-                    "metric": metric
+                    "metric": metric,
+                    "predict": result,
+                    "time": end_time - start_time
                 })
-            except UnpredictableError as e:
+                self.log_str(str(results[-1]) + "\n")
+            except Exception as e:
                 print(e)
-                result.append({
+                results.append({
                     "success": False
                 })
+            if len(results) % 20 == 0:
+                with open("results.pkl", "wb") as f:
+                    pickle.dump(results, f)
+                    f.close()
+                    
+        with open("results.pkl", "wb") as f:
+            pickle.dump(results, f)
+            f.close()
             
-        return result
+        return results

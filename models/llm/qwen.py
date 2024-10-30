@@ -8,11 +8,17 @@ class Qwen(LLMBase):
         self.device = device_map
         self.max_new_tokens = max_new_tokens
         self.model = Qwen2ForCausalLM.from_pretrained(model_path, device_map=device_map, **kwargs)
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, **kwargs)
+        self.tokenizer = AutoTokenizer.from_pretrained(model_path, padding_side='left', **kwargs)
         self.pre_prompts = "<|im_start|>system\nYou are Qwen, created by Alibaba Cloud. You are a helpful assistant.<|im_end|>\n<|im_start|>user\n"
-        self.post_prompts = "<|im_end|><|im_start|>assistant\n"
+        self.post_prompts = "\n<|im_end|>\n<|im_start|>assistant\n"
     
-    def predict(self, prompt: str, return_attn: bool = False) -> str | Tuple[str, Tuple, int]:
+    def tokenize(self, text: str) -> torch.Tensor:
+        return self.tokenizer(text, return_tensors="pt").input_ids # [1, seq_len]
+    
+    def detokenize(self, tokens: torch.Tensor) -> str:
+        return self.tokenizer.batch_decode(tokens)[0]
+    
+    def predict(self, prompt: str, return_attn: bool = False, max_new_tokens: int=0, **kwargs) -> str | Tuple[str, Tuple, int]:
         """
         When `return_attn` set to `True`, returns a tuple[str, Tuple, int];
         where:
@@ -28,21 +34,21 @@ class Qwen(LLMBase):
         input_len = model_inputs["input_ids"].shape[-1]
 
         if not return_attn:
-            outputs = self.model.generate(**model_inputs, max_new_tokens=self.max_new_tokens)
-            return self.tokenizer.batch_decode(outputs, skip_special_tokens=True)[0][input_len:]
+            outputs = self.model.generate(**model_inputs, max_new_tokens=(self.max_new_tokens if max_new_tokens == 0 else max_new_tokens))
+            return self.tokenizer.batch_decode(outputs[:, input_len:], skip_special_tokens=True)[0]
         # return attn
         outputs = self.model.generate(**model_inputs, max_new_tokens=self.max_new_tokens, output_attentions=True, return_dict_in_generate=True, do_sample=False)
 
         return (self.tokenizer.batch_decode(outputs.sequences, skip_special_tokens=False)[0], outputs.attentions, input_len)
 
-    def attentioned_predict(self, prompt: str, output_only: bool=True, inner_attention: bool=False) -> Tuple[str, torch.Tensor]:
+    def attentioned_predict(self, prompt: str, output_only: bool=True, inner_attention: bool=False, max_new_tokens: int=0) -> Tuple[str, torch.Tensor]:
         """
         When `inner_attention` set to `True`, returns (output, attention scores in input sequence). 
         - str: The predicted result.
         - torch.Tensor: The token level attention scores with the input, which has the shape [output_len, input_len]
         NOTE: input_len DOES NOT contains bos token.
         """
-        outputs, attentions, input_len = self.predict(prompt, return_attn=True)
+        outputs, attentions, input_len = self.predict(prompt, return_attn=True, max_new_tokens=max_new_tokens)
 
         if inner_attention:
             attentions = attentions[0] # Tuple[tensor[1, 32, l, l]]

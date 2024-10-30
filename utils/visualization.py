@@ -90,8 +90,20 @@ def visualize_tree(data: Union[str, Dict],
         layer = node['layer']
         id2node[node_id] = node
         
-        if 'selected' in node:
-            colors.append('red' if node['selected'] else 'blue')
+        if 'selected' in node: # `select` first, when drawing traj
+            if 'from' in node and node['from'] != -1:
+                from_color = 'red' if node['from'] % 2 == 0 else 'pink'
+                if node['from'] == data['gt']:
+                    from_color = 'yellow'
+            else:
+                from_color = 'red'
+            colors.append('green' if node['selected'] else from_color)
+        elif 'from' in node and node['from'] != -1:
+            colors.append('red' if node['from'] % 2 == 0 else 'pink')
+            if node['from'] == data['gt']:
+                colors[-1] = 'yellow'
+        else:
+            colors.append('red')
         G.add_node(node_id, layer=layer)
         id_to_desc[node_id] = split_text(desc, max_line_length)
 
@@ -187,7 +199,8 @@ def visualize_tree(data: Union[str, Dict],
 def animate(data: Union[str, Dict],
             video_path: str,
             weight_threshold: float=0.02,
-            duration: Union[int, float]=1.5):
+            duration: Union[int, float]=1.5,
+            gt: Union[int, List[int], None]=None):
     """
     Animate the query process.
     - data: data exported by `GarlicTree.query`
@@ -203,6 +216,11 @@ def animate(data: Union[str, Dict],
         node2desc[node['id']] = node['desc']
     assert "init" in data, "Animate retrieval must have `init` in data!"
     assert "traj" in data, "Animate retrieval must have `traj` in data!"
+
+    if gt is not None and 'gt' not in data:
+        data["gt"] = gt
+    if "gt" not in data:
+        data["gt"] = -1
     
     selected = set(data['init'])
     data['nodes'] = [dct | {"selected": dct["id"] in selected} for dct in data['nodes']]
@@ -219,5 +237,5 @@ def animate(data: Union[str, Dict],
     images_to_video(frames, output_path=video_path, fps=30, duration=duration)
 
 if __name__ == '__main__':
-    # visualize_tree("tmp/traj.json", show=True, weight_threshold=0.1)
-    animate("tmp/traj.json", video_path="1.mp4", duration=2.5)
+    visualize_tree("tmp/tree.json", show=True, weight_threshold=0.1)
+    # animate("tmp/traj.json", video_path="10.mp4", duration=2.5, gt=2)

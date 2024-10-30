@@ -14,10 +14,13 @@ class GarlicNode:
     ir_model = SentenceTransformer("/share_io02_hdd/wangyaoning/sbert")
     children: List[Any]
 
-    def __init__(self, image: Union[ImageLike, None]=None, desc: Union[str, None]=None) -> None:
+    def __init__(self, image: Union[ImageLike, None]=None,
+                       desc: Union[str, None]=None,
+                       page_num: int=-1) -> None:
         self.image = image
         self.desc = desc
         self.children = []
+        self.page_num = page_num
         self.embedding = GarlicNode.ir_model.encode(self.desc, convert_to_tensor=True)
 
         self.id = GarlicNode.node_id
@@ -37,10 +40,16 @@ class GarlicNode:
 
 class GarlicTree(TreeBase):
     model: VLMBase
-    def __init__(self, vmodel: VLMBase, log: str=None, max_tries: int=10, late_stops: int=5):
+    def __init__(self,
+                 vmodel: VLMBase,
+                 log: str=None,
+                 max_tries: int=10,
+                 late_stops: int=5,
+                 look_image: bool=True):
         self.model = vmodel
         self.max_tries = max_tries
         self.late_stops = late_stops
+        self.look_image = look_image
         self.prompt_template = "Summary the following information. Split your summary into different summary points according to the semantic information in these information points. It is not necessary to generate each summary point for each information point. Gather and organize information into summary points. In each summary point, try to avoid using pronouns like he/she/they and instead use full names. Generate in the format of: * <summary point1>\n* <summary point2>\n* <summary point3>."
         self.interm_template = "Please group the summary points, for each group, give it a subtitle and briefly describe it. Do not repeat the information point in the given paragraphs. Do not list any specific figure or number(For example, percentage / number...). Generate in the format of: **subtitle 1**: <description of subtitle1>\n**subtitle 2**: <description of subtitle2>\n..."
         self.prompt_template_img = "Are there any figures(pie chart, table, bar chart, etc.) in this document? If so, briefly summarize meaning of each figure in this page. Else, reply a single string `No`. Do not list any specific number or value."
@@ -69,7 +78,8 @@ class GarlicTree(TreeBase):
                 obj["nodes"].append({
                     "id": node.id,
                     "desc": node.desc,
-                    "layer": i
+                    "layer": i,
+                    "from": node.page_num
                 })
                 for (child, weight) in node.children:
                     obj["edges"].append([node.id, child.id, weight])
@@ -253,6 +263,7 @@ class GarlicTree(TreeBase):
     
     def select_page_num(self, nodes: List[GarlicNode], idx: int, token_sum: int=3000) -> int:
         approx_token_lens = [len(node.desc) for node in nodes]
+        approx_token_lens = [self.model.token_len(node.desc) for node in nodes]
         token_len, page_num = approx_token_lens[idx], 1
         while token_len < token_sum and idx + page_num < len(nodes):
             token_len += approx_token_lens[idx + page_num]
@@ -261,14 +272,68 @@ class GarlicTree(TreeBase):
         self.log_str(f"Select {page_num} pages, approx token = {token_len}\n")
         
         return page_num
+
+    def build_text(self, passage: str, path: str="") -> None:
+        """
+        The basic function of Garlic Tree.
+        """
+        GarlicNode.node_id = 0
+        self.layers = list()
+        leaves = list()
+
+        tokens = torch.split(self.model.tokenize(passage), 300, dim=1)
+
+        for chunk in tokens:
+            leaves.append(GarlicNode(desc=self.model.detokenize(chunk)))
+            
+        self.layers.append(leaves)
+
+        while len(self.layers) < 3 and len(self.layers[-1]) > 3:
+            idx = 0
+            new_layer = list()
+
+            while idx < len(self.layers[-1]):
+                page_num = self.select_page_num(self.layers[-1], idx) # key function 1: select chunk size
+                nodes = self.layers[-1][idx: idx+page_num]
+
+                new_nodes = self.summary(nodes, layer=len(self.layers)) # key function 2: summary
+
+                new_layer.extend(new_nodes)
+                idx += page_num
+
+            self.layers.append(new_layer)
+
+        self.id2node = dict()
+        for layer in self.layers:
+            for node in layer:
+                self.id2node[node.id] = node
+        
+        self.embeddings = []
+        for i in range(GarlicNode.node_id):
+            self.embeddings.append(self.id2node[i].embedding)
+
+        self.embeddings = torch.stack(self.embeddings)
+        
+        # calculate adj matrix
+        self.adj_matrix = torch.zeros((GarlicNode.node_id, GarlicNode.node_id), dtype=torch.float32)
+        for layer in self.layers:
+            for node in layer:
+                node: GarlicNode
+                ids, weights = self._fetch_weights(node)
+                if len(ids):
+                    self.adj_matrix[node.id][ids] = weights
+        
+        self.log_str(str(self.adj_matrix))
+
+        print(self.layers)
+
+        self._save_tree(path + "_tree.pkl")
     
     def build(self, images: ImageLike, leaves: str=None, path: str="") -> None:
         """
-        The basic function of Garlic Tree. Begin from a list of images, garlic tree do:
-        1. For each image I, summarize its text content T(I), then form a leaf node (I, T(I)). All of the leaves form the bottom layer L0.
-        2. Do while P():
-            - Summarize neighbor children to form a new summarization S. The attn score cannot be calculated (because of the flash-attn stuff)
+        The basic function of Garlic Tree.
         """
+        GarlicNode.node_id = 0
         self.layers = list()
         self.image_descs = list()
         leaves = list() if leaves is None else self._load_leaves(leaves)
@@ -277,9 +342,9 @@ class GarlicTree(TreeBase):
             for i, image in enumerate(images):
                 w, h = image.size
                 self.log_str(f"Predicting page {i}...\n")
-                response = self.model.predict(self.get_prompt_template(0), image)
+                response = self.model.predict(self.get_prompt_template(0), image, return_attn=False)
                 IPs = self._parse_response(response)
-                leaves.extend([GarlicNode(image=None, desc=ip) for ip in IPs])
+                leaves.extend([GarlicNode(image=image, desc=ip, page_num=i) for ip in IPs])
                 # leaves.append(GarlicNode(image=image, desc=self.model.predict(self.get_prompt_template(0), image))) # Original
                 # self.image_descs.append(GarlicNode(image=image, desc=self.model.predict(self.prompt_template_img, image)))
                 self.log_str(f"Summarize of page {i}: \n***************************************************************************************************\n{leaves[-1].desc}\n")
@@ -329,7 +394,7 @@ class GarlicTree(TreeBase):
 
         self._save_tree(path + "_tree.pkl")
         
-    def finish_query(self, prompt: str, memory: List[GarlicNode], images: ImageLike=None, multi_models: bool=False) -> Tuple[str, torch.Tensor]:
+    def finish_query(self, prompt: str, memory: List[GarlicNode], images: ImageLike=None) -> Tuple[str, torch.Tensor]:
         """
         Given prompt and memory, ask LLM(VLM) if the question can be answered.
         """
@@ -340,7 +405,7 @@ class GarlicTree(TreeBase):
                     *[node.desc.replace('<|im_end|>', '') for node in memory],
                     self.model.post_prompts
                     ]
-        if multi_models and images is None:
+        if not images or not self.look_image:
             self.log_str(f"Raw finish input: {template}\n")
             output, attentions = self.model.attentioned_predict("".join(template), inner_attention=True, max_new_tokens=100)
             scores = self.model.str_level_score(template, template, attentions, io_attention=False) # [5 + len(memory), 5 + len(memory)]
@@ -349,7 +414,28 @@ class GarlicTree(TreeBase):
             # compensation on position
             scores = scores * torch.arange(1, len(memory) + 1).to(scores)
             return output, scores
-        return self.model.predict(template, images), torch.ones(len(memory) + 1)
+        
+        # image
+        output, attentions = self.model.attentioned_predict("".join(template[1:-1]), images, inner_attention=True, output_only=False)
+        pre_prompts = output[:len(self.model.pre_prompts)]
+        prompt_idx = output.find("".join(template[1:-1]))
+        image_prompts = output[len(self.model.pre_prompts): prompt_idx]
+        final_output = output[prompt_idx + len("".join(template[1:-1]))]
+        input_seq = [
+            pre_prompts,
+            image_prompts,
+            *template[1:-1],
+            self.model.post_prompts
+        ]
+        scores = self.model.str_level_score(
+            input_seq,
+            input_seq,
+            attentions=attentions,
+            io_attention=False
+        )
+        scores = scores[5:-1, 2]
+        scores = scores * torch.arange(1, len(memory) + 1).to(scores)
+        return output, scores
 
     def graph_search(self, nodes: List[GarlicNode], memory_ids: Set[int], attentions: torch.Tensor, query_embedding: torch.Tensor) -> GarlicNode:
         """
@@ -391,35 +477,42 @@ class GarlicTree(TreeBase):
         query_embedding = GarlicNode.ir_model.encode(prompt)
         # TODO
         memory: List[GarlicNode] = self.layers[-1]
-        if ignore_charts:
-            memory = [node for node in memory if len(node.children)]
+
+        # if ignore_charts:
+        #     memory = [node for node in memory if len(node.children)]
         
         if export_traj:
             init = [node.id for node in memory]
             traj = list()
 
         memory_ids = set([node.id for node in memory])
-        finish_result, attention_score = self.finish_query(prompt, memory, multi_models=True)
+        cur_images = list()
+        finish_result, attention_score = self.finish_query(prompt, memory, cur_images)
         self.log_str(f"<Initial info>\n" + "".join(self._fetch_desc(memory)) + "</Initial info>\n")
-        while ('yes' not in finish_result.lower() or self.late_stop()) and tries <= self.max_tries:
+        while ('yes' not in finish_result.lower() or self.late_stop()) and tries <= self.max_tries and len(memory) < GarlicNode.node_id:
             self.log_str(finish_result, tag="Finish result")
 
             next_node = self.graph_search(memory, memory_ids, attention_score, query_embedding)
+
+            if isinstance(next_node.image, Image.Image):
+                cur_images.append(next_node.image)
         
             memory.append(next_node)
             memory_ids.add(next_node.id)
             if export_traj:
                 traj.append(next_node.id)
 
-            finish_result, attention_score = self.finish_query(prompt, memory, multi_models=True)
+            finish_result, attention_score = self.finish_query(prompt, memory, cur_images)
 
             tries += 1
 
-        memories = "\n".join(reversed(self._fetch_desc(memory)))
+        memories = "\n".join(self._fetch_desc(memory)) # REVERSED?
 
         self.log_str(f"Exit after {tries} searches.\n")
 
         if export_traj:
             self.as_json(export_traj, init, traj)
 
-        return self.model._text_predict(f"Given the above information and question, answer the question as concisely as you can.\nQuestion: \n{prompt}\n\nInformation:\n{memories}", return_attn=False)
+        return self.model.predict(self.model.pre_prompts + f"Given the above information and question, answer the question as concisely as you can.\nQuestion: \n{prompt}\n\nInformation:\n{memories}" + self.model.post_prompts,
+                                  image=cur_images if len(cur_images) else None,
+                                  return_attn=False)

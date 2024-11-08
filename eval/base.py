@@ -61,7 +61,16 @@ class VLEvaluator:
     
     def run(self, samples: int=0, output_file: str="results.pkl") -> List[Dict]:
         """
-        - samples: #samples to be evaluated
+        - samples: #samples to be evaluated.
+        Each output dict has format: {
+            "success": bool,
+            "qid": int,
+            "query": str,
+            "time": float,
+            **prediction_dict,
+            (Optional)"exception": str,
+            (Optional)"gt": str
+        }
         """
         assert hasattr(self, 'dataset'), "Must call `load_dataset` first!"
 

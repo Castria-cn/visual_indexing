@@ -36,6 +36,8 @@ class MPDocVQAEvaluator(VLEvaluator):
         self.cache_dir = cache_dir
         self.strategy = strategy
         self.target_size = target_image_size
+
+        os.makedirs(self.cache_dir, exist_ok=True)
     
     def merge_images_horizontally(self, image_list):
         widths, heights = list(), list()

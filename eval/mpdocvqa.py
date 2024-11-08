@@ -4,10 +4,9 @@ import datasets
 import hashlib
 from PIL import Image
 from rouge import Rouge
-from typing import Any, List, Union
+from typing import Any, List, Union, Dict
 from eval.base import VLEvaluator
 from models.base import ImageLike
-from utils.pdf_utils import PDFReader
 from structure.vistree import VisRAGTree
 
 class MPDocVQAEvaluator(VLEvaluator):
@@ -63,7 +62,6 @@ class MPDocVQAEvaluator(VLEvaluator):
         return img.resize((int(w / max_ratio), int(h / max_ratio)))
 
     def load_dataset(self, dataset_path: str, split: str="validation", oracle: bool=False, cache_dir=None):
-        self.reader = PDFReader()
         dataset = datasets.load_dataset(dataset_path, cache_dir=cache_dir)
         def generator():
             for item in dataset[split]:
@@ -82,7 +80,8 @@ class MPDocVQAEvaluator(VLEvaluator):
                     "query": item["question"],
                     "answer": item["answers"],
                     "doc_id": item["doc_id"],
-                    "page_ids": item["page_ids"]
+                    "page_ids": item["page_ids"],
+                    "qid": item["questionId"]
                 }
         
         self.dataset = generator
@@ -98,7 +97,7 @@ class MPDocVQAEvaluator(VLEvaluator):
         else:
             self.tree.build(images, save_path=pickle_dir, strategy=self.strategy, **kwargs)
     
-    def predict(self, images: ImageLike, query: str, **kwargs) -> str:
+    def predict(self, images: ImageLike, query: str, **kwargs) -> Dict[str, Any]:
         strategy = self.strategy
 
         new_images = []
@@ -115,7 +114,8 @@ class MPDocVQAEvaluator(VLEvaluator):
 
         elif strategy == 'retrieve':
             k = self.kwargs.get('retrieve_k', 3)
-            new_images = self.tree.retrieve(images, query, k=k)
+            indices = self.tree.retrieve(images, query, k=k)
+            new_images = [images[idx] for idx in indices]
 
         elif strategy == 'visrag':
             k = self.kwargs.get('visrag_k', 3)
@@ -128,7 +128,10 @@ class MPDocVQAEvaluator(VLEvaluator):
         # predict by qwen2-vl
         examples = "Who is Miss Delmer?\nthe elderly spinster aunt of the Earl de Verseley and Captain Delmar.\nWho is the bully that steals Percival's lunch?\nhis teacher, Mr. O'Gallagher\nWhat news does Percival receive at the end of the story?\nHe has been granted the right to use his father's name, Delmar\n"
         prompt = f"Answer the question as concisely as you can. Here are some examples:\n{examples}\nQuestion: \n{query}"
-        return self.tree.model.predict(prompt, new_images, return_attn=False)
+        return {
+            "answer": self.tree.model.predict(prompt, new_images, return_attn=False),
+            "answer_page": indices[0] if strategy != 'concat' else 0 # meaningless for concat strategy
+        }
 
     def metric(self, predict: str, answer: Union[str, List[str]], **kwargs) -> Any:
         if type(answer) == str:

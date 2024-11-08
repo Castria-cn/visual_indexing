@@ -1,0 +1,9 @@
+python-Levenshtein
+rouge
+torch==2.1.2
+transformers
+numpy
+Pillow
+datasets
+qwen-vl-utils
+accelerate

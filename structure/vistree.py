@@ -132,7 +132,7 @@ class VisRAGTree(TreeBase):
             with open(kwargs['save_path'], 'wb') as fp:
                 pickle.dump(self.embed_tree, fp)
     
-    def retrieve(self, images: ImageLike, prompt: str, k: int=3) -> List[Image.Image]:
+    def retrieve(self, images: ImageLike, prompt: str, k: int=3) -> List[int]:
         if k >= len(images):
             return images
         if hasattr(self, 'embed_tree'):
@@ -140,7 +140,7 @@ class VisRAGTree(TreeBase):
         else:
             indices = self.greedy_search(self.tree, prompt, k=k)
 
-        return [images[idx] for idx in indices]
+        return indices
     
     def load(self, pickle_file: str) -> None:
         with open(pickle_file, 'rb') as fp:

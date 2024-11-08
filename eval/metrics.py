@@ -37,6 +37,8 @@ name2func = {
 }
 
 def report_score(file: str, metrics: List[str]=["anls", "rouge"], samples: int=None) -> None:
+    assert all([metric in name2func for metric in metrics])
+    
     if file.endswith(".pkl"):
         with open(file, "rb") as fp:
             obj = pickle.load(fp)

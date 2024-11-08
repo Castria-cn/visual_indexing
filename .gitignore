@@ -3,7 +3,6 @@ hf_models/*
 *pycache*
 *json
 main.py
-*txt
 *png
 *mp4
 *pkl

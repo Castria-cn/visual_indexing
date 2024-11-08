@@ -40,7 +40,7 @@ class VLEvaluator:
         pass
     
     @abstractmethod
-    def predict(self, images: ImageLike, query: str, **kwargs) -> str:
+    def predict(self, images: ImageLike, query: str, **kwargs) -> Dict[str, Any]:
         """
         Make prediction. When unable to predict, call `call_unpredictable`.
         """
@@ -83,21 +83,27 @@ class VLEvaluator:
                 qid = id_ if "qid" not in item else item["qid"]
                 id_ += 1
 
-                self.build(images, **item)
-
-                start_time = time.perf_counter()
-                result = self.predict(images, query, **item)
-                end_time = time.perf_counter()
-                metric = self.metric(result, answer, **item)
-                results.append({
-                    "success": True,
+                self.build(images, **item) # build index
+                output_dict = {
                     "qid": qid,
                     "query": query,
-                    "answer": answer,
-                    "metric": metric,
-                    "predict": result,
-                    "time": end_time - start_time
-                })
+                    "gt": answer
+                }
+
+                start_time = time.perf_counter()
+
+                result = self.predict(images, query, **item) # prediction
+
+                output_dict.update(result)
+                output_dict["success"] = True
+
+                end_time = time.perf_counter()
+                output_dict.update({"time": end_time - start_time})
+
+                metric = self.metric(result, answer, **item) # calculate metrics
+                output_dict["metric"] = metric
+
+                results.append(output_dict)
             except Exception as e:
                 print(e)
                 results.append({

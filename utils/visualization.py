@@ -80,6 +80,8 @@ def visualize_tree(data: Union[str, Dict],
             data = json.load(fp)
 
     G = nx.Graph()
+    if 'gt' not in data:
+        data['gt'] = -1
 
     colors = list()
     id_to_desc = {}
@@ -111,7 +113,7 @@ def visualize_tree(data: Union[str, Dict],
         id0, id1, weight = edge
         if weight_threshold < weight_threshold:
             continue
-        assert id2node[id0]['layer'] != id2node[id1]['layer'], f"Assertion: layer of node ({id0}, {id1}) should not be same!"
+        # assert id2node[id0]['layer'] != id2node[id1]['layer'], f"Assertion: layer of node ({id0}, {id1}) should not be same!"
         G.add_edge(id0, id1, weight=weight)
 
     layers = nx.get_node_attributes(G, 'layer')
@@ -237,5 +239,5 @@ def animate(data: Union[str, Dict],
     images_to_video(frames, output_path=video_path, fps=30, duration=duration)
 
 if __name__ == '__main__':
-    visualize_tree("tmp/tree.json", show=True, weight_threshold=0.1)
+    visualize_tree("tmp/traj.json", show=True, weight_threshold=0.1)
     # animate("tmp/traj.json", video_path="10.mp4", duration=2.5, gt=2)

@@ -6,8 +6,10 @@ from PIL import Image
 from typing import List, Union, Tuple, Any, Set
 from sentence_transformers import SentenceTransformer
 
+from utils.image_utils import zip_images
 from models.base import VLMBase, ImageLike, LLMBase
 from structure.tree import TreeBase
+# from qa.qa_generator import parse_qa
 
 class GarlicNode:
     node_id = 0
@@ -45,11 +47,15 @@ class GarlicTree(TreeBase):
                  log: str=None,
                  max_tries: int=10,
                  late_stops: int=5,
-                 look_image: bool=True):
+                 look_image: bool=True,
+                 target_size: int=1152,
+                 max_chunk_size: int=4):
         self.model = vmodel
         self.max_tries = max_tries
         self.late_stops = late_stops
         self.look_image = look_image
+        self.target_size = target_size
+        self.max_chunk_size = max_chunk_size
         self.prompt_template = "Summary the following information. Split your summary into different summary points according to the semantic information in these information points. It is not necessary to generate each summary point for each information point. Gather and organize information into summary points. In each summary point, try to avoid using pronouns like he/she/they and instead use full names. Generate in the format of: * <summary point1>\n* <summary point2>\n* <summary point3>."
         self.interm_template = "Please group the summary points, for each group, give it a subtitle and briefly describe it. Do not repeat the information point in the given paragraphs. Do not list any specific figure or number(For example, percentage / number...). Generate in the format of: **subtitle 1**: <description of subtitle1>\n**subtitle 2**: <description of subtitle2>\n..."
         self.prompt_template_img = "Are there any figures(pie chart, table, bar chart, etc.) in this document? If so, briefly summarize meaning of each figure in this page. Else, reply a single string `No`. Do not list any specific number or value."
@@ -261,7 +267,7 @@ class GarlicTree(TreeBase):
                 assert new_nodes[i].id != nodes[j].id
         return new_nodes
     
-    def select_page_num(self, nodes: List[GarlicNode], idx: int, token_sum: int=3000) -> int:
+    def select_page_num(self, nodes: List[GarlicNode], idx: int, token_sum: int=2048) -> int:
         approx_token_lens = [len(node.desc) for node in nodes]
         approx_token_lens = [self.model.token_len(node.desc) for node in nodes]
         token_len, page_num = approx_token_lens[idx], 1
@@ -329,7 +335,60 @@ class GarlicTree(TreeBase):
 
         self._save_tree(path + "_tree.pkl")
     
-    def build(self, images: ImageLike, leaves: str=None, path: str="") -> None:
+    def select_image_num(self, nodes: List[GarlicNode], start_idx: int) -> int:
+        base_size = nodes[start_idx].image.size
+        batch_size = 1
+        while batch_size < self.max_chunk_size and start_idx + batch_size < len(nodes) and nodes[start_idx + batch_size].image.size == base_size:
+            batch_size += 1
+        
+        return batch_size
+    
+    def summary_image(self, nodes: List[GarlicNode], layer: int) -> List[GarlicNode]:
+        images = self._fetch_images(nodes)
+        if len(images) == 1:
+            new_nodes = [GarlicNode(
+                image=images[0],
+                desc=None
+            )]
+        else:
+            base_size = images[0].size
+            new_image = zip_images(images, block_size=len(images))
+
+        return new_nodes
+    
+    def build_images(self, images: ImageLike, path: str="") -> None:
+        """
+        11.5: pure image `build`.
+        """
+        GarlicNode.node_id = 0
+        self.layers = list()
+        leaves = list()
+
+        for i, image in enumerate(images):
+            leaves.append(
+                GarlicNode(
+                    image=image,
+                    desc=None,
+                    page_num=i
+                )
+            )
+        
+        while len(self.layers) < 3 and len(self.layers[-1]) > 3:
+            idx = 0
+            new_layer = list()
+
+            while idx < len(self.layers[-1]):
+                page_num = self.select_image_num(self.layers[-1], idx) # key function 1: select chunk size
+                nodes = self.layers[-1][idx: idx+page_num]
+
+                new_nodes = self.summary_image(nodes, layer=len(self.layers)) # key function 2: summary
+
+                new_layer.extend(new_nodes)
+                idx += page_num
+
+            self.layers.append(new_layer)
+    
+    def build(self, images: ImageLike, leaves: str=None, path: str="", extra_qas: Union[str, dict, None]=None) -> None:
         """
         The basic function of Garlic Tree.
         """
@@ -368,7 +427,26 @@ class GarlicTree(TreeBase):
 
             self.layers.append(new_layer)
         
-        self.layers[-1].extend(self.image_descs)
+        # self.layers[-1].extend(self.image_descs)
+
+        # no extra qa
+        if extra_qas:
+            if isinstance(extra_qas, str):
+                with open(extra_qas, 'rb') as fp:
+                    extra_qas = pickle.load(fp)
+            
+            qa_cache_nodes = list()
+            
+            qas = [parse_qa(page_qa, ir_model=GarlicNode.ir_model) for page_qa in extra_qas] # List[List[Tuple[str, str]]]
+            assert len(qas) == len(images), "len(extra_qas) != len(images)!"
+            for i, page in enumerate(qas):
+                page: List[Tuple[str, str]]
+                for q, a in page:
+                    new_node = GarlicNode(image=images[i], desc=q+a, page_num=i)
+                    new_node.add_children([(self.layers[0][i], 1.0)])
+                    qa_cache_nodes.append(new_node)
+            
+            self.layers[-1].extend(qa_cache_nodes)
 
         self.id2node = dict()
         for layer in self.layers:
@@ -416,11 +494,12 @@ class GarlicTree(TreeBase):
             return output, scores
         
         # image
+        images = self.zip_images(images)
         output, attentions = self.model.attentioned_predict("".join(template[1:-1]), images, inner_attention=True, output_only=False)
         pre_prompts = output[:len(self.model.pre_prompts)]
         prompt_idx = output.find("".join(template[1:-1]))
         image_prompts = output[len(self.model.pre_prompts): prompt_idx]
-        final_output = output[prompt_idx + len("".join(template[1:-1]))]
+        
         input_seq = [
             pre_prompts,
             image_prompts,
@@ -471,7 +550,7 @@ class GarlicTree(TreeBase):
         self.late_stop_counter -= 1
         return self.late_stop_counter > -1
 
-    def query(self, prompt: str, ignore_charts: bool=True, export_traj: Union[None, str]=None) -> str:
+    def query(self, prompt: str, ignore_charts: bool=True, export_traj: Union[None, str]=None, without_text=True) -> str:
         tries = 0
         self.late_stop_counter = self.late_stops
         query_embedding = GarlicNode.ir_model.encode(prompt)
@@ -486,7 +565,8 @@ class GarlicTree(TreeBase):
             traj = list()
 
         memory_ids = set([node.id for node in memory])
-        cur_images = list()
+
+        added_pages, cur_images = set(), list()
         finish_result, attention_score = self.finish_query(prompt, memory, cur_images)
         self.log_str(f"<Initial info>\n" + "".join(self._fetch_desc(memory)) + "</Initial info>\n")
         while ('yes' not in finish_result.lower() or self.late_stop()) and tries <= self.max_tries and len(memory) < GarlicNode.node_id:
@@ -494,8 +574,9 @@ class GarlicTree(TreeBase):
 
             next_node = self.graph_search(memory, memory_ids, attention_score, query_embedding)
 
-            if isinstance(next_node.image, Image.Image):
+            if isinstance(next_node.image, Image.Image) and next_node.page_num not in added_pages:
                 cur_images.append(next_node.image)
+                added_pages.add(next_node.page_num)
         
             memory.append(next_node)
             memory_ids.add(next_node.id)
@@ -512,7 +593,16 @@ class GarlicTree(TreeBase):
 
         if export_traj:
             self.as_json(export_traj, init, traj)
+        
+        if len(cur_images):
+            cur_images = self.zip_images(cur_images)
+            self.log_str(f"Add {len(cur_images)} images.")
+        
+        if without_text:
+            return self.model.predict(f"Answer the question as concisely as you can. \nQuestion: \n{prompt}", 
+                                      image=cur_images,
+                                      return_attn=False)
 
-        return self.model.predict(self.model.pre_prompts + f"Given the above information and question, answer the question as concisely as you can.\nQuestion: \n{prompt}\n\nInformation:\n{memories}" + self.model.post_prompts,
+        return self.model.predict(self.model.pre_prompts + f"Given the above information and question, answer the question as concisely as you can. Question: \n{prompt}\n\nInformation:\n{memories}" + self.model.post_prompts,
                                   image=cur_images if len(cur_images) else None,
                                   return_attn=False)

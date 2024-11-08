@@ -53,8 +53,13 @@ class VLEvaluator:
     def call_unpredictable(self, message: str):
         raise UnpredictableError(message)
     
+    def build(self, images: ImageLike, **kwargs) -> None:
+        pass
+
+    def filter(self, item: Dict[str, Any]) -> bool:
+        return False
     
-    def run(self, samples: int=0) -> List[Dict]:
+    def run(self, samples: int=0, output_file: str="results.pkl") -> List[Dict]:
         """
         - samples: #samples to be evaluated
         """
@@ -71,10 +76,15 @@ class VLEvaluator:
         for item in tqdm(iter(dataset)):
             if samples != 0 and id_ >= samples:
                 break
+            if self.filter(item):
+                continue
             try:
                 images, query, answer = item.pop("corpus"), item.pop("query"), item.pop("answer")
                 qid = id_ if "qid" not in item else item["qid"]
                 id_ += 1
+
+                self.build(images, **item)
+
                 start_time = time.perf_counter()
                 result = self.predict(images, query, **item)
                 end_time = time.perf_counter()
@@ -88,18 +98,19 @@ class VLEvaluator:
                     "predict": result,
                     "time": end_time - start_time
                 })
-                self.log_str(str(results[-1]) + "\n")
             except Exception as e:
                 print(e)
                 results.append({
-                    "success": False
+                    "success": False,
+                    "exception": str(e)
                 })
+            self.log_str(str(results[-1]) + "\n")
             if len(results) % 20 == 0:
-                with open("results.pkl", "wb") as f:
+                with open(output_file, "wb") as f:
                     pickle.dump(results, f)
                     f.close()
                     
-        with open("results.pkl", "wb") as f:
+        with open(output_file, "wb") as f:
             pickle.dump(results, f)
             f.close()
             
